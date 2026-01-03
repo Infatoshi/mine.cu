@@ -64,6 +64,19 @@ If you're an LLM working with this codebase, read [docs/LLM.md](docs/LLM.md) for
 }
 ```
 
+## TODO
+
+Contributions welcome. Some ideas:
+
+- [ ] Procedural terrain generation (noise-based heightmaps)
+- [ ] Voxel-based collision detection (replace flat ground plane)
+- [ ] Block placement action
+- [ ] Inventory system
+- [ ] Multi-agent visibility (render other agents)
+- [ ] More block types and textures
+- [ ] Curriculum learning utilities
+- [ ] Benchmark on other GPUs (A100, H100, 4090)
+
 ## License
 
 MIT
