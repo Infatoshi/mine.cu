@@ -20,5 +20,7 @@ venv/
 
 # Misc
 *.mp4
-*.gif
 .DS_Store
+
+# Keep demo assets
+!assets/demo.gif
