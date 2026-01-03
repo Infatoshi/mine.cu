@@ -223,7 +223,7 @@ The rendering uses DDA raymarching. Physics handles movement, gravity, and colli
 
 ```bibtex
 @software{minecu2026,
-  author = {Infatoshi},
+  author = {Elliot Arledge},
   title = {mine.cu: High-Performance Batched Voxel RL Environment},
   year = {2026},
   url = {https://github.com/Infatoshi/mine.cu}

@@ -4,7 +4,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 setup(
     name="minecu",
     version="0.1.0",
-    author="Infatoshi",
+    author="Elliot Arledge",
     description="High-performance batched voxel RL environment with custom CUDA kernels",
     packages=["minecu"],
     ext_modules=[
