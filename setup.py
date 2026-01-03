@@ -19,6 +19,17 @@ setup(
                 "nvcc": ["-O3", "--use_fast_math"],
             },
         ),
+        CUDAExtension(
+            name="minecu._C_opt",
+            sources=[
+                "src/kernels_optimized.cu",
+                "src/bindings_optimized.cpp",
+            ],
+            extra_compile_args={
+                "cxx": ["-O3"],
+                "nvcc": ["-O3", "--use_fast_math"],
+            },
+        ),
     ],
     cmdclass={"build_ext": BuildExtension},
     python_requires=">=3.10",
