@@ -11,7 +11,7 @@ All benchmarks measured on RTX 3090.
 
 ## Throughput Scaling
 
-![Throughput Scaling](../assets/scaling.png)
+![Throughput Surface](../assets/surface.png)
 
 Throughput depends on three hyperparameters: batch size, world size, and render resolution.
 

@@ -201,9 +201,9 @@ def plot_scaling():
     ax.set_ylim(0, 58)
 
     plt.tight_layout()
-    plt.savefig('assets/scaling.png', dpi=150, bbox_inches='tight', facecolor='white')
+    plt.savefig('assets/surface.png', dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print('Saved assets/scaling.png')
+    print('Saved assets/surface.png')
 
 
 if __name__ == '__main__':

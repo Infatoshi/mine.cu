@@ -45,7 +45,7 @@ for _ in range(100):
 
 ## Throughput
 
-![Throughput Scaling](assets/scaling.png)
+![Throughput Surface](assets/surface.png)
 
 Peak: **49.6M steps/sec** with batch=32K, world=16, resolution=32x32. See [benchmarks](docs/benchmarks.md) for full results.
 
