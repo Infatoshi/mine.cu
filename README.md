@@ -2,6 +2,8 @@
 
 High-performance batched voxel RL environment with custom CUDA kernels.
 
+![Demo](assets/demo.gif)
+
 A minimal Minecraft-like environment designed for reinforcement learning research. All environment logic runs on GPU via custom CUDA kernels for maximum throughput.
 
 ## Features
