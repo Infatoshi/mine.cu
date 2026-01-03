@@ -10,45 +10,45 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Throughput data from benchmarks (M steps/sec)
-# Optimized kernel: loop unrolling + __ldg + block_size=128
+# Optimized kernel: AABB early termination + loop unrolling + __ldg + block_size=128
 # Format: (world_size, resolution, batch_size) -> throughput
 data = {
     # World 16x16x16
-    (16, 32, 4096): 24.84,
-    (16, 32, 8192): 34.47,
-    (16, 32, 16384): 45.15,
-    (16, 32, 32768): 50.84,
-    (16, 64, 4096): 11.35,
-    (16, 64, 8192): 12.89,
-    (16, 64, 16384): 13.75,
-    (16, 64, 32768): 14.19,
-    (16, 128, 4096): 3.41,
-    (16, 128, 8192): 3.50,
-    (16, 128, 16384): 3.58,
-    (16, 128, 32768): 3.59,
+    (16, 32, 4096): 24.47,
+    (16, 32, 8192): 34.11,
+    (16, 32, 16384): 42.39,
+    (16, 32, 32768): 49.63,
+    (16, 64, 4096): 11.10,
+    (16, 64, 8192): 12.57,
+    (16, 64, 16384): 13.40,
+    (16, 64, 32768): 13.74,
+    (16, 128, 4096): 3.29,
+    (16, 128, 8192): 3.42,
+    (16, 128, 16384): 3.47,
+    (16, 128, 32768): 3.49,
     # World 32x32x32
-    (32, 32, 4096): 7.02,
-    (32, 32, 8192): 7.96,
-    (32, 32, 16384): 8.32,
-    (32, 32, 32768): 8.51,
-    (32, 64, 4096): 2.25,
-    (32, 64, 8192): 2.30,
-    (32, 64, 16384): 2.33,
-    (32, 64, 32768): 2.36,
-    (32, 128, 4096): 0.64,
-    (32, 128, 8192): 0.64,
-    (32, 128, 16384): 0.64,
-    (32, 128, 32768): 0.64,
+    (32, 32, 4096): 8.10,
+    (32, 32, 8192): 9.20,
+    (32, 32, 16384): 9.91,
+    (32, 32, 32768): 10.15,
+    (32, 64, 4096): 2.78,
+    (32, 64, 8192): 2.83,
+    (32, 64, 16384): 2.90,
+    (32, 64, 32768): 2.91,
+    (32, 128, 4096): 0.82,
+    (32, 128, 8192): 0.84,
+    (32, 128, 16384): 0.84,
+    (32, 128, 32768): 0.83,
     # World 48x48x48
-    (48, 32, 4096): 5.41,
-    (48, 32, 8192): 5.96,
-    (48, 32, 16384): 6.17,
-    (48, 64, 4096): 1.76,
-    (48, 64, 8192): 1.80,
-    (48, 64, 16384): 1.82,
-    (48, 128, 4096): 0.49,
-    (48, 128, 8192): 0.49,
-    (48, 128, 16384): 0.49,
+    (48, 32, 4096): 5.51,
+    (48, 32, 8192): 5.94,
+    (48, 32, 16384): 6.30,
+    (48, 64, 4096): 1.83,
+    (48, 64, 8192): 1.87,
+    (48, 64, 16384): 1.88,
+    (48, 128, 4096): 0.53,
+    (48, 128, 8192): 0.53,
+    (48, 128, 16384): 0.53,
 }
 
 
@@ -86,10 +86,10 @@ def plot_throughput_bars():
 
         # Highlight peak
         for j, v in enumerate(values):
-            if v == 50.84:
+            if v == 49.63:
                 bars[j].set_edgecolor('black')
                 bars[j].set_linewidth(2)
-                ax.annotate('50.8M', (x[j] + offset, v + 1.5), ha='center', fontsize=9, fontweight='bold')
+                ax.annotate('49.6M', (x[j] + offset, v + 1.5), ha='center', fontsize=9, fontweight='bold')
 
     ax.set_ylabel('Throughput (M steps/sec)', fontsize=11)
     ax.set_xlabel('Configuration (world size, resolution)', fontsize=11)
@@ -102,7 +102,7 @@ def plot_throughput_bars():
     ax.set_axisbelow(True)
 
     # Add horizontal line at peak
-    ax.axhline(y=50.84, color='#e74c3c', linestyle='--', alpha=0.5, linewidth=1)
+    ax.axhline(y=49.63, color='#e74c3c', linestyle='--', alpha=0.5, linewidth=1)
 
     plt.tight_layout()
     plt.savefig('assets/throughput.png', dpi=150, bbox_inches='tight', facecolor='white')
@@ -110,46 +110,58 @@ def plot_throughput_bars():
     print('Saved assets/throughput.png')
 
 
-def plot_throughput_heatmap():
-    """Create heatmap showing throughput surface."""
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+def plot_throughput_surface():
+    """Create 3D surface plot showing throughput."""
+    from mpl_toolkits.mplot3d import Axes3D
+
+    fig = plt.figure(figsize=(14, 5))
 
     resolutions = [32, 64, 128]
-    batch_sizes = [4096, 8192, 16384, 32768]
-    world_sizes = [16, 32, 48]
+    batch_sizes = np.array([4096, 8192, 16384, 32768])
+    world_sizes = np.array([16, 32, 48])
+
+    # Create meshgrid for surface
+    BS, WS = np.meshgrid(np.arange(len(batch_sizes)), np.arange(len(world_sizes)))
 
     for idx, res in enumerate(resolutions):
-        ax = axes[idx]
+        ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
 
-        # Build matrix
-        matrix = np.zeros((len(batch_sizes), len(world_sizes)))
-        for i, bs in enumerate(batch_sizes):
-            for j, ws in enumerate(world_sizes):
-                matrix[i, j] = data.get((ws, res, bs), 0)
+        # Build Z matrix (throughput values)
+        Z = np.zeros((len(world_sizes), len(batch_sizes)))
+        for i, ws in enumerate(world_sizes):
+            for j, bs in enumerate(batch_sizes):
+                Z[i, j] = data.get((ws, res, bs), 0)
 
-        im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=52)
+        # Create surface
+        surf = ax.plot_surface(BS, WS, Z, cmap='plasma', edgecolor='black',
+                               linewidth=0.3, alpha=0.9, antialiased=True)
+
+        # Mark peak for 32px resolution
+        if res == 32:
+            peak_idx = np.unravel_index(np.argmax(Z), Z.shape)
+            ax.scatter([peak_idx[1]], [peak_idx[0]], [Z[peak_idx]],
+                      color='white', s=100, edgecolors='black', linewidths=2, zorder=5)
+            ax.text(peak_idx[1], peak_idx[0], Z[peak_idx] + 3,
+                   f'{Z[peak_idx]:.1f}M', fontsize=9, fontweight='bold', ha='center')
 
         # Labels
-        ax.set_xticks(range(len(world_sizes)))
-        ax.set_xticklabels([f'{ws}³' for ws in world_sizes])
-        ax.set_yticks(range(len(batch_sizes)))
-        ax.set_yticklabels([f'{bs//1000}K' for bs in batch_sizes])
-        ax.set_xlabel('World Size')
-        ax.set_ylabel('Batch Size')
-        ax.set_title(f'Resolution: {res}x{res}', fontweight='bold')
+        ax.set_xticks(range(len(batch_sizes)))
+        ax.set_xticklabels([f'{bs//1000}K' for bs in batch_sizes], fontsize=8)
+        ax.set_yticks(range(len(world_sizes)))
+        ax.set_yticklabels([f'{ws}³' for ws in world_sizes], fontsize=8)
+        ax.set_xlabel('Batch Size', fontsize=9, labelpad=5)
+        ax.set_ylabel('World Size', fontsize=9, labelpad=5)
+        ax.set_zlabel('M steps/sec', fontsize=9, labelpad=5)
+        ax.set_title(f'Resolution: {res}x{res}', fontsize=11, fontweight='bold', pad=10)
 
-        # Annotate values
-        for i in range(len(batch_sizes)):
-            for j in range(len(world_sizes)):
-                val = matrix[i, j]
-                color = 'white' if val > 25 else 'black'
-                ax.text(j, i, f'{val:.1f}', ha='center', va='center', color=color, fontsize=9)
+        # Set consistent z-axis limits
+        ax.set_zlim(0, 55)
 
-    fig.suptitle('Throughput (M steps/sec) by Configuration', fontsize=13, fontweight='bold', y=1.02)
+        # Better viewing angle
+        ax.view_init(elev=25, azim=45)
 
-    # Colorbar
-    cbar = fig.colorbar(im, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
-    cbar.set_label('M steps/sec')
+    fig.suptitle('Throughput Surface by Hyperparameters (RTX 3090)',
+                 fontsize=13, fontweight='bold', y=0.98)
 
     plt.tight_layout()
     plt.savefig('assets/throughput_heatmap.png', dpi=150, bbox_inches='tight', facecolor='white')
@@ -174,8 +186,8 @@ def plot_scaling():
         ax.plot(batch_sizes, throughputs, 'o-', label=label, color=color, linewidth=2, markersize=8)
 
     # Mark peak
-    ax.scatter([32768], [50.84], s=150, c='#e74c3c', zorder=5, edgecolors='black', linewidths=2)
-    ax.annotate('Peak: 50.8M', (32768, 50.84), xytext=(25000, 44), fontsize=10,
+    ax.scatter([32768], [49.63], s=150, c='#e74c3c', zorder=5, edgecolors='black', linewidths=2)
+    ax.annotate('Peak: 49.6M', (32768, 49.63), xytext=(25000, 44), fontsize=10,
                 arrowprops=dict(arrowstyle='->', color='gray'))
 
     ax.set_xlabel('Batch Size', fontsize=11)
@@ -199,6 +211,6 @@ if __name__ == '__main__':
     os.makedirs('assets', exist_ok=True)
 
     plot_throughput_bars()
-    plot_throughput_heatmap()
+    plot_throughput_surface()
     plot_scaling()
     print('Done!')

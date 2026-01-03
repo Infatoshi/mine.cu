@@ -20,10 +20,10 @@ setup(
             },
         ),
         CUDAExtension(
-            name="minecu._C_opt",
+            name="minecu._C_experimental",
             sources=[
-                "src/kernels_optimized.cu",
-                "src/bindings_optimized.cpp",
+                "src/kernels_experimental.cu",
+                "src/bindings_experimental.cpp",
             ],
             extra_compile_args={
                 "cxx": ["-O3"],

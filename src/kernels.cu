@@ -43,8 +43,43 @@ __constant__ float SKY_COLOR[3] = {0.53f, 0.81f, 0.92f};
 
 
 // =============================================================================
-// RENDER KERNEL - Optimized DDA raymarching with loop unrolling + __ldg
-// Optimizations: #pragma unroll 4, __ldg() for voxel/camera reads, block_size=128
+// AABB RAY INTERSECTION - Early termination for rays missing the world
+// =============================================================================
+
+__device__ __forceinline__ bool ray_intersects_aabb(
+    float ox, float oy, float oz,
+    float dx, float dy, float dz,
+    float minx, float miny, float minz,
+    float maxx, float maxy, float maxz,
+    float* t_entry, float* t_exit
+) {
+    float inv_dx = (dx != 0.0f) ? 1.0f / dx : 1e30f;
+    float inv_dy = (dy != 0.0f) ? 1.0f / dy : 1e30f;
+    float inv_dz = (dz != 0.0f) ? 1.0f / dz : 1e30f;
+
+    float t1 = (minx - ox) * inv_dx;
+    float t2 = (maxx - ox) * inv_dx;
+    float t3 = (miny - oy) * inv_dy;
+    float t4 = (maxy - oy) * inv_dy;
+    float t5 = (minz - oz) * inv_dz;
+    float t6 = (maxz - oz) * inv_dz;
+
+    float tmin = fmaxf(fmaxf(fminf(t1, t2), fminf(t3, t4)), fminf(t5, t6));
+    float tmax = fminf(fminf(fmaxf(t1, t2), fmaxf(t3, t4)), fmaxf(t5, t6));
+
+    *t_entry = tmin;
+    *t_exit = tmax;
+
+    if (tmax < 0 || tmin > tmax) {
+        return false;
+    }
+    return true;
+}
+
+
+// =============================================================================
+// RENDER KERNEL - Optimized DDA raymarching
+// Optimizations: AABB early termination, #pragma unroll 4, __ldg(), block_size=128
 // =============================================================================
 
 __global__ void render_kernel(
@@ -116,8 +151,28 @@ __global__ void render_kernel(
     ray_y /= ray_len;
     ray_z /= ray_len;
 
-    // DDA raymarching
+    // Early termination: test if ray intersects world AABB
     int ws = world_size;
+    float t_entry, t_exit;
+    bool hits_world = ray_intersects_aabb(
+        eye_x, eye_y, eye_z,
+        ray_x, ray_y, ray_z,
+        0.0f, 0.0f, 0.0f,
+        (float)ws, (float)ws, (float)ws,
+        &t_entry, &t_exit
+    );
+
+    int out_idx = (b * height * width + py * width + px) * 3;
+
+    // Skip DDA entirely if ray misses world or entry point is beyond view distance
+    if (!hits_world || t_entry > view_distance) {
+        output[out_idx + 0] = SKY_COLOR[0];
+        output[out_idx + 1] = SKY_COLOR[1];
+        output[out_idx + 2] = SKY_COLOR[2];
+        return;
+    }
+
+    // DDA raymarching
     int ws2 = ws * ws;
     int ws3 = ws * ws * ws;
 
@@ -176,6 +231,8 @@ __global__ void render_kernel(
                 hit_block = block; \
                 goto render_done; \
             } \
+        } else if (t > t_exit) { \
+            goto render_done; \
         } \
         if (t_max_x < t_max_y && t_max_x < t_max_z) { \
             t = t_max_x; \
@@ -208,8 +265,6 @@ __global__ void render_kernel(
 
 render_done:
     // Output color
-    int out_idx = (b * height * width + py * width + px) * 3;
-
     if (hit_block >= 0) {
         float r = BLOCK_COLORS[hit_block][0];
         float g = BLOCK_COLORS[hit_block][1];
