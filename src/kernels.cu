@@ -43,7 +43,8 @@ __constant__ float SKY_COLOR[3] = {0.53f, 0.81f, 0.92f};
 
 
 // =============================================================================
-// RENDER KERNEL - Batched raymarching with DDA
+// RENDER KERNEL - Optimized DDA raymarching with loop unrolling + __ldg
+// Optimizations: #pragma unroll 4, __ldg() for voxel/camera reads, block_size=128
 // =============================================================================
 
 __global__ void render_kernel(
@@ -68,12 +69,12 @@ __global__ void render_kernel(
     int py = pixel_idx / width;
     int px = pixel_idx % width;
 
-    // Camera params
-    float cam_x = cameras[b * 5 + 0];
-    float cam_y = cameras[b * 5 + 1];
-    float cam_z = cameras[b * 5 + 2];
-    float yaw = cameras[b * 5 + 3];
-    float pitch = cameras[b * 5 + 4];
+    // Camera params - use __ldg for read-only texture cache path
+    float cam_x = __ldg(&cameras[b * 5 + 0]);
+    float cam_y = __ldg(&cameras[b * 5 + 1]);
+    float cam_z = __ldg(&cameras[b * 5 + 2]);
+    float yaw = __ldg(&cameras[b * 5 + 3]);
+    float pitch = __ldg(&cameras[b * 5 + 4]);
 
     // Eye position (offset for head height)
     float eye_x = cam_x;
@@ -91,7 +92,6 @@ __global__ void render_kernel(
     float forward_z = cos_yaw * cos_pitch;
 
     float right_x = cos_yaw;
-    float right_y = 0.0f;
     float right_z = -sin_yaw;
 
     float up_x = -sin_yaw * sin_pitch;
@@ -107,7 +107,7 @@ __global__ void render_kernel(
     float v = (1.0f - 2.0f * (py + 0.5f) / height) * half_fov;
 
     float ray_x = forward_x + u * right_x + v * up_x;
-    float ray_y = forward_y + u * right_y + v * up_y;
+    float ray_y = forward_y + v * up_y;
     float ray_z = forward_z + u * right_z + v * up_z;
 
     // Normalize ray
@@ -162,40 +162,51 @@ __global__ void render_kernel(
     int hit_face = -1;  // 0=x, 1=y, 2=z
     int8_t hit_block = AIR;
 
-    for (int step = 0; step < max_steps && t < view_distance; ++step) {
-        // Check current voxel
-        if (voxel_x >= 0 && voxel_x < ws &&
-            voxel_y >= 0 && voxel_y < ws &&
-            voxel_z >= 0 && voxel_z < ws) {
+    // Unrolled DDA loop with __ldg for voxel reads
+    int step = 0;
 
-            int voxel_idx = b * ws3 + voxel_y * ws2 + voxel_x * ws + voxel_z;
-            int8_t block = voxels[voxel_idx];
+    #define DDA_STEP() \
+        if (step >= max_steps || t >= view_distance) goto render_done; \
+        if (voxel_x >= 0 && voxel_x < ws && \
+            voxel_y >= 0 && voxel_y < ws && \
+            voxel_z >= 0 && voxel_z < ws) { \
+            int voxel_idx = b * ws3 + voxel_y * ws2 + voxel_x * ws + voxel_z; \
+            int8_t block = __ldg(&voxels[voxel_idx]); \
+            if (block >= 0) { \
+                hit_block = block; \
+                goto render_done; \
+            } \
+        } \
+        if (t_max_x < t_max_y && t_max_x < t_max_z) { \
+            t = t_max_x; \
+            t_max_x += t_delta_x; \
+            voxel_x += step_x; \
+            hit_face = 0; \
+        } else if (t_max_y < t_max_z) { \
+            t = t_max_y; \
+            t_max_y += t_delta_y; \
+            voxel_y += step_y; \
+            hit_face = 1; \
+        } else { \
+            t = t_max_z; \
+            t_max_z += t_delta_z; \
+            voxel_z += step_z; \
+            hit_face = 2; \
+        } \
+        ++step;
 
-            if (block >= 0) {
-                hit_block = block;
-                break;
-            }
-        }
-
-        // Step to next voxel
-        if (t_max_x < t_max_y && t_max_x < t_max_z) {
-            t = t_max_x;
-            t_max_x += t_delta_x;
-            voxel_x += step_x;
-            hit_face = 0;
-        } else if (t_max_y < t_max_z) {
-            t = t_max_y;
-            t_max_y += t_delta_y;
-            voxel_y += step_y;
-            hit_face = 1;
-        } else {
-            t = t_max_z;
-            t_max_z += t_delta_z;
-            voxel_z += step_z;
-            hit_face = 2;
-        }
+    // Unroll 4x per iteration for better instruction-level parallelism
+    #pragma unroll 4
+    for (int i = 0; i < max_steps; i += 4) {
+        DDA_STEP();
+        DDA_STEP();
+        DDA_STEP();
+        DDA_STEP();
     }
 
+    #undef DDA_STEP
+
+render_done:
     // Output color
     int out_idx = (b * height * width + py * width + px) * 3;
 
@@ -488,7 +499,7 @@ void launch_render(
     int max_steps, float view_distance, float fov_degrees
 ) {
     int total_pixels = batch_size * height * width;
-    int block_size = 256;
+    int block_size = 128;  // Optimized: 128 threads performs better than 256
     int num_blocks = (total_pixels + block_size - 1) / block_size;
 
     render_kernel<<<num_blocks, block_size>>>(

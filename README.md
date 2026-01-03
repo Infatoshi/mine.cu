@@ -10,7 +10,7 @@ A minimal Minecraft-like environment designed for reinforcement learning researc
 
 - **Pure CUDA**: All rendering, physics, and game logic run on GPU
 - **Batched**: Train thousands of agents in parallel
-- **Fast**: Up to 20.5M environment steps per second on RTX 3090
+- **Fast**: Up to 50.8M environment steps per second on RTX 3090
 - **Minimal**: Clean PyTorch integration, no JAX overhead
 - **Zero-copy**: GPU tensors throughout, no CPU-GPU transfers
 
@@ -118,10 +118,12 @@ Environment throughput depends on three main hyperparameters: batch size, world 
 
 ![Throughput Scaling](assets/scaling.png)
 
-Peak throughput of **20.5M steps/second** achieved with:
+Peak throughput of **50.8M steps/second** achieved with:
 - `batch_size=32768`
 - `world_size=16`
 - `render_resolution=32x32`
+
+The render kernel uses optimized DDA raymarching with loop unrolling and `__ldg()` cache hints.
 
 ### Hyperparameter Reference
 
@@ -139,14 +141,14 @@ Peak throughput of **20.5M steps/second** achieved with:
 
 | World | Resolution | Batch 4K | Batch 8K | Batch 16K | Batch 32K |
 |-------|------------|----------|----------|-----------|-----------|
-| 16x16x16 | 32x32 | 13.6M | 17.6M | 19.6M | **20.5M** |
-| 16x16x16 | 64x64 | 5.1M | 5.4M | 5.5M | 5.6M |
-| 16x16x16 | 128x128 | 1.5M | 1.5M | 1.5M | 1.5M |
-| 32x32x32 | 32x32 | 5.8M | 6.3M | 6.5M | 6.7M |
-| 32x32x32 | 64x64 | 1.8M | 1.8M | 1.8M | 1.8M |
-| 32x32x32 | 128x128 | 0.5M | 0.5M | 0.5M | 0.5M |
-| 48x48x48 | 32x32 | 4.4M | 4.7M | 4.8M | - |
-| 48x48x48 | 64x64 | 1.4M | 1.4M | 1.4M | - |
+| 16x16x16 | 32x32 | 24.8M | 34.5M | 45.2M | **50.8M** |
+| 16x16x16 | 64x64 | 11.4M | 12.9M | 13.8M | 14.2M |
+| 16x16x16 | 128x128 | 3.4M | 3.5M | 3.6M | 3.6M |
+| 32x32x32 | 32x32 | 7.0M | 8.0M | 8.3M | 8.5M |
+| 32x32x32 | 64x64 | 2.3M | 2.3M | 2.3M | 2.4M |
+| 32x32x32 | 128x128 | 0.6M | 0.6M | 0.6M | 0.6M |
+| 48x48x48 | 32x32 | 5.4M | 6.0M | 6.2M | - |
+| 48x48x48 | 64x64 | 1.8M | 1.8M | 1.8M | - |
 
 ### Configuration
 
@@ -198,7 +200,7 @@ mine.cu/
         plot_throughput.py  # Generate benchmark graphs
 ```
 
-The rendering uses DDA raymarching. Physics handles movement, gravity, and collision. Block breaking uses raycasting from the player's view direction.
+The rendering uses optimized DDA raymarching with loop unrolling and `__ldg()` intrinsics for texture cache access. Physics handles movement, gravity, and collision. Block breaking uses raycasting from the player's view direction.
 
 ## Block Types
 

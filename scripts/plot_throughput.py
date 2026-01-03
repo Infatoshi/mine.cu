@@ -10,44 +10,45 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Throughput data from benchmarks (M steps/sec)
+# Optimized kernel: loop unrolling + __ldg + block_size=128
 # Format: (world_size, resolution, batch_size) -> throughput
 data = {
     # World 16x16x16
-    (16, 32, 4096): 13.60,
-    (16, 32, 8192): 17.64,
-    (16, 32, 16384): 19.62,
-    (16, 32, 32768): 20.54,
-    (16, 64, 4096): 5.08,
-    (16, 64, 8192): 5.40,
-    (16, 64, 16384): 5.53,
-    (16, 64, 32768): 5.58,
-    (16, 128, 4096): 1.51,
-    (16, 128, 8192): 1.53,
-    (16, 128, 16384): 1.53,
-    (16, 128, 32768): 1.54,
+    (16, 32, 4096): 24.84,
+    (16, 32, 8192): 34.47,
+    (16, 32, 16384): 45.15,
+    (16, 32, 32768): 50.84,
+    (16, 64, 4096): 11.35,
+    (16, 64, 8192): 12.89,
+    (16, 64, 16384): 13.75,
+    (16, 64, 32768): 14.19,
+    (16, 128, 4096): 3.41,
+    (16, 128, 8192): 3.50,
+    (16, 128, 16384): 3.58,
+    (16, 128, 32768): 3.59,
     # World 32x32x32
-    (32, 32, 4096): 5.81,
-    (32, 32, 8192): 6.26,
-    (32, 32, 16384): 6.54,
-    (32, 32, 32768): 6.66,
-    (32, 64, 4096): 1.76,
-    (32, 64, 8192): 1.79,
-    (32, 64, 16384): 1.81,
-    (32, 64, 32768): 1.81,
-    (32, 128, 4096): 0.49,
-    (32, 128, 8192): 0.50,
-    (32, 128, 16384): 0.50,
-    (32, 128, 32768): 0.49,
+    (32, 32, 4096): 7.02,
+    (32, 32, 8192): 7.96,
+    (32, 32, 16384): 8.32,
+    (32, 32, 32768): 8.51,
+    (32, 64, 4096): 2.25,
+    (32, 64, 8192): 2.30,
+    (32, 64, 16384): 2.33,
+    (32, 64, 32768): 2.36,
+    (32, 128, 4096): 0.64,
+    (32, 128, 8192): 0.64,
+    (32, 128, 16384): 0.64,
+    (32, 128, 32768): 0.64,
     # World 48x48x48
-    (48, 32, 4096): 4.40,
-    (48, 32, 8192): 4.68,
-    (48, 32, 16384): 4.81,
-    (48, 64, 4096): 1.35,
-    (48, 64, 8192): 1.37,
-    (48, 64, 16384): 1.38,
-    (48, 128, 4096): 0.37,
-    (48, 128, 8192): 0.37,
-    (48, 128, 16384): 0.37,
+    (48, 32, 4096): 5.41,
+    (48, 32, 8192): 5.96,
+    (48, 32, 16384): 6.17,
+    (48, 64, 4096): 1.76,
+    (48, 64, 8192): 1.80,
+    (48, 64, 16384): 1.82,
+    (48, 128, 4096): 0.49,
+    (48, 128, 8192): 0.49,
+    (48, 128, 16384): 0.49,
 }
 
 
@@ -85,10 +86,10 @@ def plot_throughput_bars():
 
         # Highlight peak
         for j, v in enumerate(values):
-            if v == 20.54:
+            if v == 50.84:
                 bars[j].set_edgecolor('black')
                 bars[j].set_linewidth(2)
-                ax.annotate('20.5M', (x[j] + offset, v + 0.5), ha='center', fontsize=9, fontweight='bold')
+                ax.annotate('50.8M', (x[j] + offset, v + 1.5), ha='center', fontsize=9, fontweight='bold')
 
     ax.set_ylabel('Throughput (M steps/sec)', fontsize=11)
     ax.set_xlabel('Configuration (world size, resolution)', fontsize=11)
@@ -96,12 +97,12 @@ def plot_throughput_bars():
     ax.set_xticks(x)
     ax.set_xticklabels([c[0] for c in configs], rotation=45, ha='right')
     ax.legend(loc='upper right', framealpha=0.9)
-    ax.set_ylim(0, 24)
+    ax.set_ylim(0, 58)
     ax.grid(axis='y', alpha=0.3)
     ax.set_axisbelow(True)
 
     # Add horizontal line at peak
-    ax.axhline(y=20.54, color='#e74c3c', linestyle='--', alpha=0.5, linewidth=1)
+    ax.axhline(y=50.84, color='#e74c3c', linestyle='--', alpha=0.5, linewidth=1)
 
     plt.tight_layout()
     plt.savefig('assets/throughput.png', dpi=150, bbox_inches='tight', facecolor='white')
@@ -126,7 +127,7 @@ def plot_throughput_heatmap():
             for j, ws in enumerate(world_sizes):
                 matrix[i, j] = data.get((ws, res, bs), 0)
 
-        im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=21)
+        im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=52)
 
         # Labels
         ax.set_xticks(range(len(world_sizes)))
@@ -141,7 +142,7 @@ def plot_throughput_heatmap():
         for i in range(len(batch_sizes)):
             for j in range(len(world_sizes)):
                 val = matrix[i, j]
-                color = 'white' if val > 10 else 'black'
+                color = 'white' if val > 25 else 'black'
                 ax.text(j, i, f'{val:.1f}', ha='center', va='center', color=color, fontsize=9)
 
     fig.suptitle('Throughput (M steps/sec) by Configuration', fontsize=13, fontweight='bold', y=1.02)
@@ -173,8 +174,8 @@ def plot_scaling():
         ax.plot(batch_sizes, throughputs, 'o-', label=label, color=color, linewidth=2, markersize=8)
 
     # Mark peak
-    ax.scatter([32768], [20.54], s=150, c='#e74c3c', zorder=5, edgecolors='black', linewidths=2)
-    ax.annotate('Peak: 20.5M', (32768, 20.54), xytext=(25000, 18), fontsize=10,
+    ax.scatter([32768], [50.84], s=150, c='#e74c3c', zorder=5, edgecolors='black', linewidths=2)
+    ax.annotate('Peak: 50.8M', (32768, 50.84), xytext=(25000, 44), fontsize=10,
                 arrowprops=dict(arrowstyle='->', color='gray'))
 
     ax.set_xlabel('Batch Size', fontsize=11)
@@ -185,7 +186,7 @@ def plot_scaling():
     ax.set_xticklabels([f'{bs//1000}K' for bs in batch_sizes])
     ax.legend(loc='upper left', framealpha=0.9)
     ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 24)
+    ax.set_ylim(0, 58)
 
     plt.tight_layout()
     plt.savefig('assets/scaling.png', dpi=150, bbox_inches='tight', facecolor='white')
