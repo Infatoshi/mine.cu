@@ -8,12 +8,23 @@ Example:
     import torch
     from minecu import MineEnv
 
+    # Cubic world (32x32x32)
     env = MineEnv(batch_size=4096, world_size=32, device="cuda")
+
+    # Non-cubic world (64x32x64 - wider X and Z)
+    env = MineEnv(batch_size=4096, world_x=64, world_y=32, world_z=64, device="cuda")
+
     obs = env.reset()
 
     for _ in range(1000):
-        actions = torch.randint(0, env.action_dim, (4096,), device="cuda")
-        obs, rewards, dones = env.step(actions)
+        # Multi-hot buttons: [forward, back, left, right, jump, break, place, sprint]
+        buttons = torch.zeros(4096, 8, dtype=torch.int8, device="cuda")
+        buttons[:, 0] = 1  # forward
+
+        # Continuous look: [delta_yaw, delta_pitch] in radians
+        look = torch.zeros(4096, 2, dtype=torch.float32, device="cuda")
+
+        obs, rewards, dones = env.step(buttons, look)
 """
 
 import torch
@@ -60,7 +71,10 @@ class MineEnv:
 
     Args:
         batch_size: Number of parallel environment instances
-        world_size: Size of cubic voxel world (world_size x world_size x world_size)
+        world_size: Size of cubic voxel world (used if world_x/y/z not specified)
+        world_x: X dimension of voxel world (overrides world_size)
+        world_y: Y dimension of voxel world - height (overrides world_size)
+        world_z: Z dimension of voxel world (overrides world_size)
         render_width: Width of rendered observation in pixels
         render_height: Height of rendered observation in pixels
         device: PyTorch device (must be CUDA)
@@ -70,22 +84,42 @@ class MineEnv:
         dt: Physics timestep
         gravity: Gravity acceleration (negative = down)
         walk_speed: Agent walking speed in blocks/second
+        sprint_mult: Sprint speed multiplier (applied to forward movement only)
         jump_vel: Initial jump velocity
         ground_height: Y level of ground surface
         target_block: Block type that gives reward when broken (-1 for any)
         reward_value: Reward for breaking target block
         episode_length: Steps per episode (None for infinite)
+
+    Action Format:
+        buttons: int8[B, 8] multi-hot encoding
+            0: forward (W)
+            1: backward (S)
+            2: strafe_left (A)
+            3: strafe_right (D)
+            4: jump (Space)
+            5: break block (LMB)
+            6: place block (RMB)
+            7: sprint (Shift)
+
+        look: float32[B, 2] continuous
+            0: delta_yaw (radians, + = look left)
+            1: delta_pitch (radians, + = look up)
     """
 
-    # Action space: 0=noop, 1=forward, 2=back, 3=left, 4=right, 5=jump, 6=break, 7-10=look
-    action_dim = 11
+    # Action dimensions
+    button_dim = 8   # Multi-hot buttons
+    look_dim = 2     # Continuous look
 
     @classmethod
     def from_config(cls, config: "EnvConfig") -> "MineEnv":
         """Create environment from config object."""
         return cls(
             batch_size=config.batch_size,
-            world_size=config.world_size,
+            world_size=getattr(config, 'world_size', 32),
+            world_x=getattr(config, 'world_x', None),
+            world_y=getattr(config, 'world_y', None),
+            world_z=getattr(config, 'world_z', None),
             render_width=config.render_width,
             render_height=config.render_height,
             device=config.device,
@@ -95,6 +129,7 @@ class MineEnv:
             dt=config.dt,
             gravity=config.gravity,
             walk_speed=config.walk_speed,
+            sprint_mult=getattr(config, 'sprint_mult', 1.5),
             jump_vel=config.jump_vel,
             ground_height=config.ground_height,
             target_block=config.target_block,
@@ -107,6 +142,9 @@ class MineEnv:
         self,
         batch_size: int = 4096,
         world_size: int = 32,
+        world_x: Optional[int] = None,
+        world_y: Optional[int] = None,
+        world_z: Optional[int] = None,
         render_width: int = 64,
         render_height: int = 64,
         device: str = "cuda",
@@ -116,17 +154,27 @@ class MineEnv:
         dt: float = 0.05,
         gravity: float = -20.0,
         walk_speed: float = 4.0,
+        sprint_mult: float = 1.5,
         jump_vel: float = 8.0,
         ground_height: int = 8,
         target_block: int = BlockType.OAKLOG,
         reward_value: float = 1.0,
         episode_length: Optional[int] = None,
         seed: int = 42,
+        obs_dtype: str = "float32",
     ):
         assert "cuda" in device, "MineEnv requires CUDA device"
+        assert obs_dtype in ("float32", "uint8", "uint8_minimal", "uint8_fp16", "uint8_prebasis", "uint8_prebasis_full", "uint8_smem"), \
+            "obs_dtype must be 'float32', 'uint8', 'uint8_minimal', 'uint8_fp16', 'uint8_prebasis', 'uint8_prebasis_full', or 'uint8_smem'"
         self.device = torch.device(device)
         self.batch_size = batch_size
-        self.world_size = world_size
+
+        # Support non-cubic worlds: world_x/y/z override world_size
+        self.world_x = world_x if world_x is not None else world_size
+        self.world_y = world_y if world_y is not None else world_size
+        self.world_z = world_z if world_z is not None else world_size
+        self.world_size = world_size  # Keep for backward compat
+
         self.render_width = render_width
         self.render_height = render_height
         self.max_steps = max_steps
@@ -135,17 +183,27 @@ class MineEnv:
         self.dt = dt
         self.gravity = gravity
         self.walk_speed = walk_speed
+        self.sprint_mult = sprint_mult
         self.jump_vel = jump_vel
         self.ground_height = ground_height
         self.target_block = target_block
         self.reward_value = reward_value
         self.episode_length = episode_length
         self.seed = seed
+        self.obs_dtype = obs_dtype
 
         # Spawn position (center of world, above ground)
-        self.spawn_x = world_size / 2.0
+        self.spawn_x = self.world_x / 2.0
         self.spawn_y = float(ground_height + 2)
-        self.spawn_z = world_size / 2.0
+        self.spawn_z = self.world_z / 2.0
+
+        # Tree position (2 blocks in front of spawn)
+        self.tree_x = int(self.spawn_x)
+        self.tree_z = int(self.spawn_z) + 2
+
+        # House position (to the right of spawn)
+        self.house_x = int(self.spawn_x) + 6
+        self.house_z = int(self.spawn_z) - 2
 
         # Allocate state tensors
         self._allocate_state()
@@ -155,11 +213,12 @@ class MineEnv:
 
     def _allocate_state(self):
         """Allocate all GPU tensors for environment state."""
-        B, W = self.batch_size, self.world_size
+        B = self.batch_size
+        WX, WY, WZ = self.world_x, self.world_y, self.world_z
         H, WW = self.render_height, self.render_width
 
         # Voxel world: [B, Y, X, Z] - Y is vertical (height)
-        self.voxels = torch.zeros((B, W, W, W), dtype=torch.int8, device=self.device)
+        self.voxels = torch.zeros((B, WY, WX, WZ), dtype=torch.int8, device=self.device)
 
         # Agent state
         self.positions = torch.zeros((B, 3), dtype=torch.float32, device=self.device)
@@ -168,19 +227,28 @@ class MineEnv:
         self.pitches = torch.zeros((B,), dtype=torch.float32, device=self.device)
         self.on_ground = torch.ones((B,), dtype=torch.bool, device=self.device)
 
-        # Render output: [B, H, W, 3] RGB float
-        self.obs_buffer = torch.zeros((B, H, WW, 3), dtype=torch.float32, device=self.device)
+        # Render output: [B, H, W, 3] RGB (float32 or uint8)
+        obs_torch_dtype = torch.uint8 if self.obs_dtype in ("uint8", "uint8_minimal", "uint8_fp16", "uint8_prebasis", "uint8_prebasis_full", "uint8_smem") else torch.float32
+        self.obs_buffer = torch.zeros((B, H, WW, 3), dtype=obs_torch_dtype, device=self.device)
 
         # Camera buffer for rendering: [B, 5] = (x, y, z, yaw, pitch)
         self.cameras = torch.zeros((B, 5), dtype=torch.float32, device=self.device)
 
-        # Action buffers
+        # Precomputed camera basis for prebasis/smem mode: [B, 14]
+        if self.obs_dtype in ("uint8_prebasis", "uint8_prebasis_full", "uint8_smem"):
+            self.basis = torch.zeros((B, 14), dtype=torch.float32, device=self.device)
+        else:
+            self.basis = None
+
+        # Action decode buffers (internal, written by decode_actions_kernel)
         self.forward_in = torch.zeros((B,), dtype=torch.float32, device=self.device)
         self.strafe_in = torch.zeros((B,), dtype=torch.float32, device=self.device)
         self.delta_yaw_in = torch.zeros((B,), dtype=torch.float32, device=self.device)
         self.delta_pitch_in = torch.zeros((B,), dtype=torch.float32, device=self.device)
         self.jump_in = torch.zeros((B,), dtype=torch.bool, device=self.device)
         self.do_break = torch.zeros((B,), dtype=torch.bool, device=self.device)
+        self.do_place = torch.zeros((B,), dtype=torch.bool, device=self.device)
+        self.speed_mult = torch.ones((B,), dtype=torch.float32, device=self.device)
 
         # Rewards and episode tracking
         self.rewards = torch.zeros((B,), dtype=torch.float32, device=self.device)
@@ -188,13 +256,16 @@ class MineEnv:
         self.do_reset = torch.zeros((B,), dtype=torch.bool, device=self.device)
 
     def _generate_world(self):
-        """Generate flat world with ground and a tree."""
+        """Generate flat world with ground, a tree, and a house."""
         _C.generate_world(self.voxels, self.ground_height, self.seed)
 
         # Place a single tree 2 blocks in front of spawn
         tree_x = int(self.spawn_x)
         tree_z = int(self.spawn_z) + 2
         _C.place_tree(self.voxels, tree_x, tree_z, self.ground_height)
+
+        # Place a house to the right of spawn
+        _C.place_house(self.voxels, self.house_x, self.house_z, self.ground_height)
 
     def reset(self, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -226,92 +297,151 @@ class MineEnv:
             tree_x = int(self.spawn_x)
             tree_z = int(self.spawn_z) + 2
             _C.place_tree(self.voxels, tree_x, tree_z, self.ground_height)
+            _C.place_house(self.voxels, self.house_x, self.house_z, self.ground_height)
 
         return self._render()
 
-    def step(self, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def step(
+        self,
+        buttons: torch.Tensor,
+        look: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Take a step in all environments.
+        Take a step in all environments using the new multi-hot action format.
 
         Args:
-            actions: Integer actions [B] in range [0, action_dim)
-                0: noop
-                1: forward
-                2: backward
-                3: strafe left
-                4: strafe right
-                5: jump
-                6: break block
-                7: look left
-                8: look right
-                9: look up
-                10: look down
+            buttons: int8[B, 8] multi-hot button states
+                0: forward (W)
+                1: backward (S)
+                2: strafe_left (A)
+                3: strafe_right (D)
+                4: jump (Space)
+                5: break block (LMB)
+                6: place block (RMB)
+                7: sprint (Shift)
+
+            look: float32[B, 2] continuous look deltas in radians
+                0: delta_yaw (+ = look left)
+                1: delta_pitch (+ = look up)
 
         Returns:
             obs: Rendered observations [B, H, W, 3]
             rewards: Rewards received [B]
             dones: Episode termination flags [B]
         """
-        # Decode actions into movement/look/break signals
-        self._decode_actions(actions)
+        # uint8_prebasis_full: episode check/update in C++, world regen in Python
+        # This eliminates PyTorch kernels for step counter while avoiding
+        # the 0.5ms cost of launching world regen every step
+        if self.obs_dtype == "uint8_prebasis_full":
+            # C++ handles: episode check, step kernels, counter update
+            _C.step_uint8_prebasis_full(
+                self.voxels,
+                self.positions, self.velocities, self.yaws, self.pitches, self.on_ground,
+                buttons, look,
+                self.do_reset,
+                self.step_count,
+                self.forward_in, self.strafe_in, self.delta_yaw_in, self.delta_pitch_in,
+                self.jump_in, self.do_break, self.do_place, self.speed_mult,
+                self.cameras,
+                self.basis,
+                self.obs_buffer, self.rewards,
+                self.render_width, self.render_height,
+                self.max_steps, self.view_distance, self.fov_degrees,
+                self.dt, self.gravity, self.walk_speed, self.sprint_mult, self.jump_vel,
+                self.target_block, self.reward_value,
+                self.spawn_x, self.spawn_y, self.spawn_z,
+                self.episode_length if self.episode_length is not None else 0,
+            )
+            # World regen only when needed (saves 0.5ms when no resets)
+            if self.do_reset.any():
+                _C.generate_world(self.voxels, self.ground_height, self.seed)
+                _C.place_tree(self.voxels, self.tree_x, self.tree_z, self.ground_height)
+                _C.place_house(self.voxels, self.house_x, self.house_z, self.ground_height)
+            return self.obs_buffer, self.rewards, self.do_reset.clone()
 
-        # Physics step
-        _C.physics(
-            self.positions, self.velocities, self.yaws, self.pitches, self.on_ground,
-            self.forward_in, self.strafe_in, self.delta_yaw_in, self.delta_pitch_in, self.jump_in,
-            self.world_size, self.dt, self.gravity, self.walk_speed, self.jump_vel
-        )
-
-        # Block breaking with reward
-        self.rewards.zero_()
-        _C.raycast_break(
-            self.voxels, self.positions, self.yaws, self.pitches,
-            self.do_break, self.rewards, self.target_block, self.reward_value
-        )
-
-        # Increment step counter
-        self.step_count += 1
-
-        # Check for episode termination
+        # Check for episode termination (before step, for auto-reset)
         if self.episode_length is not None:
-            dones = self.step_count >= self.episode_length
+            self.do_reset = self.step_count >= self.episode_length
         else:
-            dones = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.device)
+            self.do_reset.zero_()
 
-        # Auto-reset terminated episodes
-        if dones.any():
-            self.reset(dones)
+        # Single unified C++ step function
+        # - step: float32 output with fog/shading
+        # - step_uint8: uint8 output with fog/shading
+        # - step_uint8_minimal: uint8 output with flat colors (no fog/shading)
+        # - step_uint8_fp16: uint8 output with fp16 DDA (flat colors)
+        # - step_uint8_prebasis: uint8 output with precomputed camera basis (no per-pixel trig)
+        # - step_uint8_smem: uint8 output with entire voxel grid in shared memory
+        if self.obs_dtype == "uint8_smem":
+            _C.step_uint8_smem(
+                self.voxels,
+                self.positions, self.velocities, self.yaws, self.pitches, self.on_ground,
+                buttons, look,
+                self.do_reset,
+                self.forward_in, self.strafe_in, self.delta_yaw_in, self.delta_pitch_in,
+                self.jump_in, self.do_break, self.do_place, self.speed_mult,
+                self.cameras,
+                self.basis,
+                self.obs_buffer, self.rewards,
+                self.render_width, self.render_height,
+                self.max_steps, self.view_distance, self.fov_degrees,
+                self.dt, self.gravity, self.walk_speed, self.sprint_mult, self.jump_vel,
+                self.target_block, self.reward_value,
+                self.spawn_x, self.spawn_y, self.spawn_z,
+            )
+        elif self.obs_dtype == "uint8_prebasis":
+            _C.step_uint8_prebasis(
+                self.voxels,
+                self.positions, self.velocities, self.yaws, self.pitches, self.on_ground,
+                buttons, look,
+                self.do_reset,
+                self.forward_in, self.strafe_in, self.delta_yaw_in, self.delta_pitch_in,
+                self.jump_in, self.do_break, self.do_place, self.speed_mult,
+                self.cameras,
+                self.basis,
+                self.obs_buffer, self.rewards,
+                self.render_width, self.render_height,
+                self.max_steps, self.view_distance, self.fov_degrees,
+                self.dt, self.gravity, self.walk_speed, self.sprint_mult, self.jump_vel,
+                self.target_block, self.reward_value,
+                self.spawn_x, self.spawn_y, self.spawn_z,
+            )
+        else:
+            if self.obs_dtype == "uint8_fp16":
+                step_fn = _C.step_uint8_fp16
+            elif self.obs_dtype == "uint8_minimal":
+                step_fn = _C.step_uint8_minimal
+            elif self.obs_dtype == "uint8":
+                step_fn = _C.step_uint8
+            else:
+                step_fn = _C.step
+            step_fn(
+                self.voxels,
+                self.positions, self.velocities, self.yaws, self.pitches, self.on_ground,
+                buttons, look,
+                self.do_reset,
+                self.forward_in, self.strafe_in, self.delta_yaw_in, self.delta_pitch_in,
+                self.jump_in, self.do_break, self.do_place, self.speed_mult,
+                self.cameras,
+                self.obs_buffer, self.rewards,
+                self.render_width, self.render_height,
+                self.max_steps, self.view_distance, self.fov_degrees,
+                self.dt, self.gravity, self.walk_speed, self.sprint_mult, self.jump_vel,
+                self.target_block, self.reward_value,
+                self.spawn_x, self.spawn_y, self.spawn_z,
+            )
 
-        return self._render(), self.rewards.clone(), dones
+        # Increment step counter (reset handled in kernel for do_reset agents)
+        self.step_count += 1
+        self.step_count.masked_fill_(self.do_reset, 1)  # Reset counter starts at 1 after reset step
 
-    def _decode_actions(self, actions: torch.Tensor):
-        """Decode integer actions into continuous control signals."""
-        # Reset all inputs
-        self.forward_in.zero_()
-        self.strafe_in.zero_()
-        self.delta_yaw_in.zero_()
-        self.delta_pitch_in.zero_()
-        self.jump_in.zero_()
-        self.do_break.zero_()
+        # Regenerate world for reset envs
+        if self.do_reset.any():
+            _C.generate_world(self.voxels, self.ground_height, self.seed)
+            _C.place_tree(self.voxels, self.tree_x, self.tree_z, self.ground_height)
+            _C.place_house(self.voxels, self.house_x, self.house_z, self.ground_height)
 
-        # Movement
-        self.forward_in.masked_fill_(actions == 1, 1.0)   # forward
-        self.forward_in.masked_fill_(actions == 2, -1.0)  # backward
-        self.strafe_in.masked_fill_(actions == 3, -1.0)   # left
-        self.strafe_in.masked_fill_(actions == 4, 1.0)    # right
-
-        # Jump
-        self.jump_in.masked_fill_(actions == 5, True)
-
-        # Break
-        self.do_break.masked_fill_(actions == 6, True)
-
-        # Look (0.1 radians per step)
-        look_speed = 0.1
-        self.delta_yaw_in.masked_fill_(actions == 7, look_speed)   # left
-        self.delta_yaw_in.masked_fill_(actions == 8, -look_speed)  # right
-        self.delta_pitch_in.masked_fill_(actions == 9, look_speed)  # up
-        self.delta_pitch_in.masked_fill_(actions == 10, -look_speed)  # down
+        return self.obs_buffer, self.rewards, self.do_reset.clone()
 
     def _render(self) -> torch.Tensor:
         """Render observations for all environments."""
@@ -322,10 +452,16 @@ class MineEnv:
         self.cameras[:, 3] = self.yaws
         self.cameras[:, 4] = self.pitches
 
-        _C.render(
-            self.voxels, self.cameras, self.obs_buffer,
-            self.max_steps, self.view_distance, self.fov_degrees
-        )
+        if self.obs_dtype in ("uint8", "uint8_minimal", "uint8_fp16", "uint8_prebasis", "uint8_prebasis_full", "uint8_smem"):
+            _C.render_uint8(
+                self.voxels, self.cameras, self.obs_buffer,
+                self.max_steps, self.view_distance, self.fov_degrees
+            )
+        else:
+            _C.render(
+                self.voxels, self.cameras, self.obs_buffer,
+                self.max_steps, self.view_distance, self.fov_degrees
+            )
 
         return self.obs_buffer
 
